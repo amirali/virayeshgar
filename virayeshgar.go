@@ -23,7 +23,7 @@ var (
 	l          = log.New(outfile, "", 0)
 )
 
-var version = "dev"
+var version = "0.0.0dev"
 
 const tabstop = 8
 

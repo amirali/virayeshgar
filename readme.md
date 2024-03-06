@@ -3,6 +3,11 @@ Dead simple modal editor based off vim motions
 
 ⚠️ WIP: This project was started to relieve boredom. It is full of bug and written in the wrost way possible =)))
 
+## Installation
+```bash
+go install github.com/amirali/virayeshgar@latest
+```
+
 ## Todo
 
 ### features
