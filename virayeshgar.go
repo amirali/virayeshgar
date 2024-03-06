@@ -632,9 +632,11 @@ func (e *Editor) ProcessKey() error {
 func (e *Editor) ExecuteCommand() error {
 	var err error
 
-	switch e.command {
+	commandParts := strings.Split(e.command, " ")
+
+	switch commandParts[0] {
 	case ":w":
-		n, err := e.Save()
+		n, err := e.Save(commandParts[1:]...)
 		if err != nil {
 			if err == ErrPromptCanceled {
 				e.SetStatusMessage("Save aborted")
@@ -966,10 +968,10 @@ func isArrowKey(k key) bool {
 		k == keyArrowDown || k == keyArrowLeft
 }
 
-func (e *Editor) Save() (int, error) {
-	// TODO: write to a new temp file, and then rename that file to the
-	// actual file the user wants to overwrite, checking errors through
-	// the whole process.
+func (e *Editor) Save(opts ...string) (int, error) {
+	if len(opts) > 0 {
+		e.filename = opts[0]
+	}
 	if len(e.filename) == 0 {
 		fname, err := e.Prompt("Save as: %s (ESC to cancel)", nil)
 		if err != nil {
