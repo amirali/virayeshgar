@@ -35,6 +35,7 @@ var (
 var ErrQuitEditor = errors.New("quit editor")
 var ErrUnknownMode = errors.New("unknown mode")
 var ErrUnknownCommand = errors.New("unknown command")
+var ErrUnkownMotion = errors.New("unknown motion")
 
 type Mode int
 
@@ -70,8 +71,10 @@ type Editor struct {
 
 	origTermios *unix.Termios
 
-	mode    Mode
-	command string
+	mode           Mode
+	command        string
+	motionRegister []key
+	yankRegister   string
 }
 
 func enableRawMode() (*unix.Termios, error) {
@@ -144,6 +147,14 @@ const (
 	modeKeyCapitalO key = 79
 	modeKeyCol      key = 58
 	modeKeySearch   key = 47
+)
+
+// motion
+const (
+	motionKeyD        key = 100
+	motionKeyY        key = 121
+	motionKeySmallP   key = 112
+	motionKeyCapitalP key = 80
 )
 
 // insert mode
@@ -472,6 +483,28 @@ func keySequenceEqual(a, b []key) bool {
 	return true
 }
 
+func (e *Editor) ExecuteMotion() error {
+	if len(e.motionRegister) > 3 {
+		e.motionRegister = []key{}
+		return ErrUnkownMotion
+	}
+	switch {
+	case keySequenceEqual(e.motionRegister, []key{motionKeyD, motionKeyD}):
+		e.CutRow()
+		e.motionRegister = []key{}
+	case keySequenceEqual(e.motionRegister, []key{motionKeySmallP}):
+		e.PasteRow(e.cy + 1)
+		e.motionRegister = []key{}
+	case keySequenceEqual(e.motionRegister, []key{motionKeyCapitalP}):
+		e.PasteRow(e.cy)
+		e.motionRegister = []key{}
+	case keySequenceEqual(e.motionRegister, []key{motionKeyY, motionKeyY}):
+		e.YankRow()
+		e.motionRegister = []key{}
+	}
+	return nil
+}
+
 func (e *Editor) ProcessKeyNormalMode() error {
 	k, err := readKey()
 	if err != nil {
@@ -537,6 +570,14 @@ func (e *Editor) ProcessKeyNormalMode() error {
 			} else {
 				return err
 			}
+		}
+	case escKey:
+		e.motionRegister = []key{}
+	default:
+		e.motionRegister = append(e.motionRegister, k)
+		err = e.ExecuteMotion()
+		if err != nil {
+			e.SetStatusMessage(err.Error())
 		}
 	}
 
@@ -740,7 +781,12 @@ func (e *Editor) drawStatusBar(b *strings.Builder) {
 	}
 	row, col, _ := getCursorPosition()
 
-	rmsg := fmt.Sprintf("%s | %d:%d", filetype, row, col)
+	motionString := ""
+	for _, motion := range e.motionRegister {
+		motionString += string(rune(motion))
+	}
+
+	rmsg := fmt.Sprintf("%s %s | %d:%d", motionString, filetype, row, col)
 	l := runewidth.StringWidth(lmsg)
 	for l < e.screenCols {
 		if e.screenCols-l == runewidth.StringWidth(rmsg) {
@@ -987,6 +1033,32 @@ func (e *Editor) InsertRow(at int, chars string) {
 		e.rows[i].idx++
 	}
 	e.rows[at] = row
+}
+
+func (e *Editor) CutRow() {
+	e.dirty++
+
+	row := e.rows[e.cy]
+	e.yankRegister = row.render
+
+	copy(e.rows[e.cy:], e.rows[e.cy+1:])
+	e.rows = e.rows[:len(e.rows)-1]
+	for i := e.cy; i < len(e.rows); i++ {
+		e.rows[i].idx--
+	}
+}
+
+func (e *Editor) YankRow() {
+	e.dirty++
+	row := e.rows[e.cy]
+	e.yankRegister = row.render
+}
+
+func (e *Editor) PasteRow(at int) {
+	e.dirty++
+
+	e.InsertRow(at, e.yankRegister)
+	e.yankRegister = ""
 }
 
 func (e *Editor) InsertNewline() {
