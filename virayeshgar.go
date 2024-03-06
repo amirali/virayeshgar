@@ -749,7 +749,7 @@ func (e *Editor) drawRows(b *strings.Builder) {
 					b.WriteString("\x1b[m") // reset all formatting
 					if currentColor != "" {
 						// restore the current color
-						b.WriteString(fmt.Sprintf("\x1b[%dm", currentColor))
+						b.WriteString(fmt.Sprintf("\x1b[%sm", currentColor))
 					}
 				} else if hl[i] == hlNormal {
 					if currentColor != "" {
