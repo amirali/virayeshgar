@@ -689,7 +689,7 @@ func (e *Editor) drawRows(b *strings.Builder) {
 		filerow := y + e.rowOffset
 		if filerow >= len(e.rows) {
 			if len(e.rows) == 0 && y == e.screenRows/3 {
-				welcomeMsg := fmt.Sprintf("Mini editor -- version %s", version)
+				welcomeMsg := fmt.Sprintf("Virayeshgar v%s", version)
 				if runewidth.StringWidth(welcomeMsg) > e.screenCols {
 					welcomeMsg = utf8Slice(welcomeMsg, 0, e.screenCols)
 				}
