@@ -229,7 +229,6 @@ type EditorSyntax struct {
 }
 
 var HLDB = []*EditorSyntax{
-	// FIXME: Update list
 	{
 		filetype:  "go",
 		filematch: []string{".go"},
@@ -245,7 +244,7 @@ var HLDB = []*EditorSyntax{
 			"uint32|", "int32|", "int64|", "iota|", "len|", "make|", "new|",
 			"nil|", "panic|", "uint64|", "print|", "println|", "real|",
 			"recover|", "rune|", "string|", "true|", "uint|", "uint8|",
-			"uintptr|",
+			"uintptr|", "any|",
 		},
 		scs:   "//",
 		mcs:   "/*",
