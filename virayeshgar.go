@@ -19,7 +19,7 @@ import (
 )
 
 var (
-	outfile, _ = os.Create("./virayeshgar.log")
+	outfile, _ = os.Create("./virayeshgar.keys.log")
 	l          = log.New(outfile, "", 0)
 )
 
@@ -190,18 +190,14 @@ const (
 )
 
 type EditorSyntax struct {
-	// Name of the filetype displayed in the status bar.
-	filetype string
-	// List of patterns to match a filename against.
+	filetype  string
 	filematch []string
-	// List of keywords to highlight. Use '|' suffix for keyword2 highlight.
-	keywords []string
-	// scs is a single-line comment start pattern (e.g. "//" for golang).
-	// set to an empty string if comment highlighting is not needed.
+	keywords  []string
+	// single line comment section
 	scs string
-	// mcs is a multi-line comment start pattern (e.g. "/*" for golang).
+	// multi line comment start pattern
 	mcs string
-	// mce is a multi-line comment end pattern (e.g. "*/" for golang).
+	// multi line comment end pattern
 	mce string
 	// Bit field that contains flags for whether to highlight numbers and
 	// whether to highlight strings.
@@ -380,10 +376,6 @@ func (e *Editor) MoveCursor(k key) {
 	}
 }
 
-// The number of times the user needs to press Ctrl-Q to quit
-// the editor with unsaved changes.
-const quitTimes = 3
-
 func (e *Editor) ProcessKeyInsertMode() error {
 	k, err := readKey()
 	if err != nil {
@@ -392,48 +384,6 @@ func (e *Editor) ProcessKeyInsertMode() error {
 	switch k {
 	case keyEnter:
 		e.InsertNewline()
-
-	case key(ctrl('q')):
-		// warn the user about unsaved changes.
-		if e.dirty > 0 && e.quitCounter < quitTimes {
-			e.SetStatusMessage(
-				"WARNING!!! File has unsaved changes. Press Ctrl-Q %d more times to quit.", quitTimes-e.quitCounter)
-			e.quitCounter++
-			return nil
-		}
-		os.Stdout.WriteString("\x1b[2J") // clear the screen
-		os.Stdout.WriteString("\x1b[H")  // reposition the cursor
-		return ErrQuitEditor
-
-	case key(ctrl('s')):
-		n, err := e.Save()
-		if err != nil {
-			if err == ErrPromptCanceled {
-				e.SetStatusMessage("Save aborted")
-			} else {
-				e.SetStatusMessage("Can't save! I/O error: %s", err.Error())
-			}
-		} else {
-			e.SetStatusMessage("%d bytes written to disk", n)
-		}
-
-	case key(ctrl('f')):
-		err := e.Find()
-		if err != nil {
-			if err == ErrPromptCanceled {
-				e.SetStatusMessage("")
-			} else {
-				return err
-			}
-		}
-
-	case keyHome:
-		e.cx = 0
-
-	case keyEnd:
-		if e.cy < len(e.rows) {
-			e.cx = len(e.rows[e.cy].chars)
-		}
 
 	case keyBackspace, key(ctrl('h')):
 		e.DeleteChar()
@@ -446,27 +396,6 @@ func (e *Editor) ProcessKeyInsertMode() error {
 		}
 		e.MoveCursor(keyArrowRight)
 		e.DeleteChar()
-
-	case keyPageUp:
-		// position cursor at the top first.
-		e.cy = e.rowOffset
-		// then scroll up an entire screen worth.
-		for i := 0; i < e.screenRows; i++ {
-			e.MoveCursor(keyArrowUp)
-		}
-	case keyPageDown:
-		// position cursor at the bottom first.
-		e.cy = e.rowOffset + e.screenRows - 1
-		if e.cy > len(e.rows) {
-			e.cy = len(e.rows)
-		}
-		// then scroll down an entire screen worth.
-		for i := 0; i < e.screenRows; i++ {
-			e.MoveCursor(keyArrowDown)
-		}
-
-	case key(ctrl('l')):
-		break // no op
 
 	case keyArrowLeft, keyArrowDown, keyArrowUp, keyArrowRight:
 		e.MoveCursor(k)
@@ -525,18 +454,6 @@ func (e *Editor) ProcessKeyNormalMode() error {
 	e.SetStatusMessage("-- NORMAL --")
 	l.Printf("%#v\n", k)
 	switch k {
-	case key(ctrl('q')):
-		// warn the user about unsaved changes.
-		if e.dirty > 0 && e.quitCounter < quitTimes {
-			e.SetStatusMessage(
-				"WARNING!!! File has unsaved changes. Press Ctrl-Q %d more times to quit.", quitTimes-e.quitCounter)
-			e.quitCounter++
-			return nil
-		}
-		os.Stdout.WriteString("\x1b[2J") // clear the screen
-		os.Stdout.WriteString("\x1b[H")  // reposition the cursor
-		return ErrQuitEditor
-
 	case navKeyH, navKeyJ, navKeyK, navKeyL, keyArrowLeft, keyArrowDown, keyArrowUp, keyArrowRight:
 		e.MoveCursor(k)
 
@@ -941,7 +858,7 @@ func (e *Editor) rowsToString() string {
 
 var ErrPromptCanceled = fmt.Errorf("user canceled the input prompt")
 
-// Prompt shows the given prompt in the status bar and get user input
+// Prompt shows the given prompt in the command bar and get user input
 // until to user presses the Enter key to confirm the input or until the user
 // presses the Escape key to cancel the input. Returns the user input and nil
 // if the user enters the input. Returns an empty string and ErrPromptCancel
@@ -1376,8 +1293,6 @@ func (e *Editor) DeleteRow(at int) {
 	}
 	e.dirty++
 }
-
-/*** find ***/
 
 func (e *Editor) Find() error {
 	savedCx := e.cx
