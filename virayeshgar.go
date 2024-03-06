@@ -573,12 +573,11 @@ func (e *Editor) ProcessKeyNormalMode() error {
 		e.InsertNewline()
 		e.SetMode(InsertMode)
 	case modeKeyCapitalO:
-		// FIXME: Line break upper line when width is less than the line above
 		if e.cy < len(e.rows) {
-			e.cx = len(e.rows[e.cy].chars)
+			e.cx = 0
 		}
-		e.MoveCursor(navKeyK)
 		e.InsertNewline()
+		e.MoveCursor(navKeyK)
 		e.SetMode(InsertMode)
 	case modeKeySearch:
 		err := e.Find()
