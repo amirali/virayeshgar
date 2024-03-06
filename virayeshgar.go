@@ -245,22 +245,6 @@ var HLDB = []*EditorSyntax{
 		mce:   "--]]",
 		flags: HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
 	},
-	{
-		filetype:  "c",
-		filematch: []string{".c", ".h", "cpp", ".cc"},
-		keywords: []string{
-			"switch", "if", "while", "for", "break", "continue", "return",
-			"else", "struct", "union", "typedef", "static", "enum", "class",
-			"case",
-
-			"int|", "long|", "double|", "float|", "char|", "unsigned|",
-			"signed|", "void|",
-		},
-		scs:   "//",
-		mcs:   "/*",
-		mce:   "*/",
-		flags: HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
-	},
 }
 
 type Row struct {
