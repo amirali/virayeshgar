@@ -689,6 +689,16 @@ func (e *Editor) ExecuteCommand() error {
 		os.Stdout.WriteString("\x1b[H")  // reposition the cursor
 		return ErrQuitEditor
 
+	case ":syntax":
+		for _, syntax := range HLDB {
+			if syntax.filetype == commandParts[1] {
+				e.syntax = syntax
+				for _, row := range e.rows {
+					e.updateHighlight(row)
+				}
+			}
+		}
+
 	default:
 		e.SetStatusMessage(ErrUnknownCommand.Error())
 	}
