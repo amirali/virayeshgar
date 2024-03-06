@@ -37,13 +37,33 @@ var ErrUnknownMode = errors.New("unknown mode")
 var ErrUnknownCommand = errors.New("unknown command")
 var ErrUnkownMotion = errors.New("unknown motion")
 
-type Mode int
+type Mode struct {
+	name          string
+	statusMessage string
+}
+
+var (
+	NormalMode  Mode = Mode{name: "normal", statusMessage: "-- NORMAL --"}
+	InsertMode       = Mode{name: "insert", statusMessage: "-- INSERT --"}
+	CommandMode      = Mode{name: "command"}
+)
+
+type action int
 
 const (
-	NormalMode Mode = iota
-	InsertMode
-	CommandMode
+	Cut action = iota
+	Paste
+	Edit
 )
+
+type UndoNode struct {
+	undoType   action
+	beforeRows []*Row
+	afterRows  []*Row
+	// NOTE: considering one line changes for now
+	fromIdx int
+	toIdx   int
+}
 
 type Editor struct {
 	cx int
@@ -75,6 +95,8 @@ type Editor struct {
 	command        string
 	motionRegister []key
 	yankRegister   string
+
+	undoPath []*UndoNode
 }
 
 func enableRawMode() (*unix.Termios, error) {
@@ -103,6 +125,7 @@ func (e *Editor) Init() error {
 
 	e.origTermios = termios
 	e.mode = NormalMode
+	e.undoPath = make([]*UndoNode, 0)
 
 	ws, err := unix.IoctlGetWinsize(stdoutfd, unix.TIOCGWINSZ)
 	if err != nil || ws.Col == 0 {
@@ -147,6 +170,7 @@ const (
 	modeKeyCapitalO key = 79
 	modeKeyCol      key = 58
 	modeKeySearch   key = 47
+	modeKeyU        key = 117
 )
 
 // motion
@@ -205,6 +229,7 @@ type EditorSyntax struct {
 }
 
 var HLDB = []*EditorSyntax{
+	// FIXME: Update list
 	{
 		filetype:  "go",
 		filematch: []string{".go"},
@@ -385,7 +410,7 @@ func (e *Editor) ProcessKeyInsertMode() error {
 	case keyEnter:
 		e.InsertNewline()
 
-	case keyBackspace, key(ctrl('h')):
+	case keyBackspace:
 		e.DeleteChar()
 
 	case keyDelete:
@@ -397,12 +422,11 @@ func (e *Editor) ProcessKeyInsertMode() error {
 		e.MoveCursor(keyArrowRight)
 		e.DeleteChar()
 
-	case keyArrowLeft, keyArrowDown, keyArrowUp, keyArrowRight:
-		e.MoveCursor(k)
+	// case keyArrowLeft, keyArrowDown, keyArrowUp, keyArrowRight:
+	// 	e.MoveCursor(k)
 
 	case escKey:
-		e.mode = NormalMode
-		e.SetStatusMessage("-- NORMAL --")
+		e.SetMode(NormalMode)
 
 	default:
 		e.InsertChar(rune(k))
@@ -424,6 +448,21 @@ func keySequenceEqual(a, b []key) bool {
 	return true
 }
 
+func (e *Editor) SetMode(mode Mode) {
+	e.mode = mode
+	e.SetStatusMessage(mode.statusMessage)
+
+	switch mode {
+	case InsertMode:
+		// FIXME: WTF?
+		newRow := *e.rows[e.cy]
+		e.undoPath = append(e.undoPath, &UndoNode{undoType: Edit, fromIdx: e.cy, toIdx: e.cy, beforeRows: []*Row{&newRow}})
+	case NormalMode:
+		// node := e.undoPath[len(e.undoPath)-1]
+		// node.toIdx = e.cy
+	}
+}
+
 func (e *Editor) ExecuteMotion() error {
 	if len(e.motionRegister) > 3 {
 		e.motionRegister = []key{}
@@ -441,9 +480,61 @@ func (e *Editor) ExecuteMotion() error {
 		e.motionRegister = []key{}
 	case keySequenceEqual(e.motionRegister, []key{motionKeyY, motionKeyY}):
 		e.YankRow()
+
 		e.motionRegister = []key{}
 	}
 	return nil
+}
+
+func insertToSlice[T any](s []T, value T, at int) []T {
+	if at >= 0 && at <= len(s) {
+		newSlice := make([]T, len(s)+1)
+		copy(newSlice[:at], s[:at])
+		newSlice[at] = value
+		copy(newSlice[at+1:], s[at:])
+		s = newSlice
+	}
+
+	return s
+}
+
+func removeFromSlice[T any](s []T, at int) []T {
+	if at >= 0 && at <= len(s) {
+		newSlice := make([]T, len(s)-1)
+		copy(newSlice[:at], s[:at])
+		copy(newSlice[at:], s[at+1:])
+		s = newSlice
+	}
+
+	return s
+}
+
+func (e *Editor) Undo() {
+	undoLength := len(e.undoPath)
+	if undoLength == 0 {
+		e.SetStatusMessage("oldest version")
+		return
+	}
+
+	lastUndoNode := e.undoPath[undoLength-1]
+	e.undoPath = e.undoPath[:undoLength-1]
+
+	switch lastUndoNode.undoType {
+	case Cut:
+		for i := 0; i < lastUndoNode.toIdx-lastUndoNode.fromIdx+1; i++ {
+			e.rows = insertToSlice(e.rows, lastUndoNode.beforeRows[i], lastUndoNode.fromIdx+i)
+		}
+	case Paste:
+		for i := 0; i < lastUndoNode.toIdx-lastUndoNode.fromIdx+1; i++ {
+			e.rows = removeFromSlice(e.rows, lastUndoNode.fromIdx+i)
+		}
+	case Edit:
+		l.Printf("before rows: %#v", lastUndoNode.beforeRows[0])
+		for i := 0; i < lastUndoNode.toIdx-lastUndoNode.fromIdx+1; i++ {
+			l.Println(lastUndoNode.fromIdx+i, i)
+			e.rows[lastUndoNode.fromIdx+i] = lastUndoNode.beforeRows[i]
+		}
+	}
 }
 
 func (e *Editor) ProcessKeyNormalMode() error {
@@ -454,43 +545,42 @@ func (e *Editor) ProcessKeyNormalMode() error {
 	e.SetStatusMessage("-- NORMAL --")
 	l.Printf("%#v\n", k)
 	switch k {
-	case navKeyH, navKeyJ, navKeyK, navKeyL, keyArrowLeft, keyArrowDown, keyArrowUp, keyArrowRight:
+
+	// case navKeyH, navKeyJ, navKeyK, navKeyL, keyArrowLeft, keyArrowDown, keyArrowUp, keyArrowRight:
+	case navKeyH, navKeyJ, navKeyK, navKeyL:
 		e.MoveCursor(k)
 
 	case modeKeyI:
-		e.mode = InsertMode
-		e.SetStatusMessage("-- INSERT --")
+		e.SetMode(InsertMode)
 	case modeKeyCol:
 		e.mode = CommandMode
+		// FIXME: Get rid of :
 		e.command = ":"
 		e.SetStatusMessage(e.command)
 
 	case modeKeySmallA:
 		e.MoveCursor(navKeyL)
-		e.mode = InsertMode
-		e.SetStatusMessage("-- INSERT --")
+		e.SetMode(InsertMode)
 
 	case modeKeyCapitalA:
 		if e.cy < len(e.rows) {
 			e.cx = len(e.rows[e.cy].chars)
 		}
-		e.mode = InsertMode
-		e.SetStatusMessage("-- INSERT --")
+		e.SetMode(InsertMode)
 	case modeKeySmallO:
 		if e.cy < len(e.rows) {
 			e.cx = len(e.rows[e.cy].chars)
 		}
 		e.InsertNewline()
-		e.mode = InsertMode
-		e.SetStatusMessage("-- INSERT --")
+		e.SetMode(InsertMode)
 	case modeKeyCapitalO:
+		// FIXME: Line break upper line when width is less than the line above
 		if e.cy < len(e.rows) {
 			e.cx = len(e.rows[e.cy].chars)
 		}
 		e.MoveCursor(navKeyK)
 		e.InsertNewline()
-		e.mode = InsertMode
-		e.SetStatusMessage("-- INSERT --")
+		e.SetMode(InsertMode)
 	case modeKeySearch:
 		err := e.Find()
 		if err != nil {
@@ -500,6 +590,8 @@ func (e *Editor) ProcessKeyNormalMode() error {
 				return err
 			}
 		}
+	case modeKeyU:
+		e.Undo()
 	case escKey:
 		e.motionRegister = []key{}
 	default:
@@ -531,6 +623,7 @@ func (e *Editor) ProcessKeyCommandMode() error {
 		e.SetStatusMessage(e.command)
 
 	case keyEnter:
+		// FIXME: Turn back to normal mode after executing command
 		return e.ExecuteCommand()
 
 	default:
@@ -763,7 +856,11 @@ func (e *Editor) drawMessageBar(b *strings.Builder) {
 
 func rowCxToRx(row *Row, cx int) int {
 	rx := 0
-	for _, r := range row.chars[:cx] {
+	idx := cx
+	if cx > len(row.chars) {
+		idx = len(row.chars) - 1
+	}
+	for _, r := range row.chars[:idx] {
 		if r == '\t' {
 			rx += (tabstop) - (rx % tabstop)
 		} else {
@@ -986,6 +1083,8 @@ func (e *Editor) CutRow() {
 	row := e.rows[e.cy]
 	e.yankRegister = row.render
 
+	e.undoPath = append(e.undoPath, &UndoNode{undoType: Cut, fromIdx: e.cy, toIdx: e.cy, beforeRows: []*Row{row}, afterRows: []*Row{{}}})
+
 	copy(e.rows[e.cy:], e.rows[e.cy+1:])
 	e.rows = e.rows[:len(e.rows)-1]
 	for i := e.cy; i < len(e.rows); i++ {
@@ -1001,6 +1100,7 @@ func (e *Editor) YankRow() {
 
 func (e *Editor) PasteRow(at int) {
 	e.dirty++
+	e.undoPath = append(e.undoPath, &UndoNode{undoType: Paste, fromIdx: at, toIdx: at, afterRows: []*Row{e.rows[at]}, beforeRows: []*Row{{}}})
 
 	e.InsertRow(at, e.yankRegister)
 	e.yankRegister = ""
@@ -1294,6 +1394,7 @@ func (e *Editor) DeleteRow(at int) {
 	e.dirty++
 }
 
+// FIXME: Sometimes the patterm match will match the line above the rowOffset
 func (e *Editor) Find() error {
 	savedCx := e.cx
 	savedCy := e.cy
