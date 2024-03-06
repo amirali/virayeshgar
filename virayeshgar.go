@@ -736,7 +736,11 @@ func (e *Editor) drawRows(b *strings.Builder) {
 				line = runewidth.Truncate(line, e.screenCols, "")
 				hl = hl[:utf8.RuneCountInString(line)]
 			}
-			currentColor := "" // keep track of color to detect color change
+			currentColor := ""          // keep track of color to detect color change
+			b.WriteString("\x1b[0;90m") // use inverted colors
+			maxLength := len(fmt.Sprint(len(e.rows)))
+			b.WriteString(fmt.Sprintf("%*d ", maxLength, e.rows[filerow].idx+1))
+			b.WriteString("\x1b[m") // reset all formatting
 			for i, r := range []rune(line) {
 				if unicode.IsControl(r) {
 					// deal with non-printable characters (e.g. Ctrl-A)
@@ -895,7 +899,7 @@ func (e *Editor) Render() {
 	e.drawMessageBar(&b)
 
 	// position the cursor
-	b.WriteString(fmt.Sprintf("\x1b[%d;%dH", (e.cy-e.rowOffset)+1, (e.rx-e.colOffset)+1))
+	b.WriteString(fmt.Sprintf("\x1b[%d;%dH", (e.cy-e.rowOffset)+1, (e.rx-e.colOffset)+1+len(fmt.Sprint(len(e.rows)))+1))
 	// show the cursor
 	b.Write([]byte("\x1b[?25h"))
 	os.Stdout.WriteString(b.String())
