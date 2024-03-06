@@ -554,8 +554,7 @@ func (e *Editor) ProcessKeyNormalMode() error {
 		e.SetMode(InsertMode)
 	case modeKeyCol:
 		e.mode = CommandMode
-		// FIXME: Get rid of :
-		e.command = ":"
+		e.command = ""
 		e.SetStatusMessage(e.command)
 
 	case modeKeySmallA:
@@ -623,7 +622,6 @@ func (e *Editor) ProcessKeyCommandMode() error {
 		e.SetStatusMessage(e.command)
 
 	case keyEnter:
-		// FIXME: Turn back to normal mode after executing command
 		return e.ExecuteCommand()
 
 	default:
@@ -656,8 +654,10 @@ func (e *Editor) ExecuteCommand() error {
 
 	commandParts := strings.Split(e.command, " ")
 
+	e.SetMode(NormalMode)
+
 	switch commandParts[0] {
-	case ":w":
+	case "w":
 		n, err := e.Save(commandParts[1:]...)
 		if err != nil {
 			if err == ErrPromptCanceled {
@@ -669,7 +669,7 @@ func (e *Editor) ExecuteCommand() error {
 			e.SetStatusMessage("%d bytes written to disk", n)
 		}
 
-	case ":q":
+	case "q":
 		if e.dirty > 0 {
 			e.SetStatusMessage("ERROR!!! File has unsaved changes")
 			e.command = ""
@@ -679,12 +679,12 @@ func (e *Editor) ExecuteCommand() error {
 		os.Stdout.WriteString("\x1b[H")  // reposition the cursor
 		return ErrQuitEditor
 
-	case ":q!":
+	case "q!":
 		os.Stdout.WriteString("\x1b[2J") // clear the screen
 		os.Stdout.WriteString("\x1b[H")  // reposition the cursor
 		return ErrQuitEditor
 
-	case ":wq":
+	case "wq":
 		n, err := e.Save()
 		if err != nil {
 			if err == ErrPromptCanceled {
@@ -699,7 +699,7 @@ func (e *Editor) ExecuteCommand() error {
 		os.Stdout.WriteString("\x1b[H")  // reposition the cursor
 		return ErrQuitEditor
 
-	case ":syntax":
+	case "syntax":
 		for _, syntax := range HLDB {
 			if syntax.filetype == commandParts[1] {
 				e.syntax = syntax
