@@ -1,5 +1,7 @@
 package main
 
+// FIXME: Do we have problem with big files?
+
 import (
 	"bufio"
 	"bytes"
@@ -163,6 +165,8 @@ const (
 	navKeyL          key = 108
 	navKeyLeftCurly  key = 123
 	navKeyRightCurly key = 125
+	navKeyGg         key = 103
+	navKeyCapitalG   key = 71
 
 	escKey key = 27
 
@@ -415,6 +419,7 @@ func (e *Editor) MoveCursorByRepeat(k key, repeat int) {
 	}
 }
 
+// FIXME: Jump off with { the screen isn't possible
 func (e *Editor) JumpParagraph(k key) {
 	if row, _, err := getCursorPosition(); err == nil {
 		var targetSlice []*Row
@@ -594,6 +599,12 @@ func (e *Editor) ProcessKeyNormalMode() error {
 
 	case navKeyLeftCurly, navKeyRightCurly:
 		e.JumpParagraph(k)
+
+	case navKeyGg:
+		e.cy = 0
+
+	case navKeyCapitalG:
+		e.cy = len(e.rows) - 1
 
 	case modeKeyI:
 		e.SetMode(InsertMode)
@@ -1152,6 +1163,7 @@ func (e *Editor) CutRow() {
 	}
 }
 
+// FIXME: when cursor is at the end of the line, the yanking doesn't work
 func (e *Editor) YankRow() {
 	e.dirty++
 	row := e.rows[e.cy]

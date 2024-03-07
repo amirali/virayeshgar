@@ -20,6 +20,7 @@ go install github.com/amirali/virayeshgar@latest
 ### navigation
 - [x] hjkl
 - [x] `{` and `}` paragraph jumps
+- [x] `gg` and `G` file jump
 - [ ] `:N` go to line N
 - [ ] `Nh`, `Nj`, `Nk`, `Nl` to navigate by N
 
