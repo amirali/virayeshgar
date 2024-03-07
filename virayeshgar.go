@@ -174,6 +174,7 @@ const (
 	modeKeyCol      key = 58
 	modeKeySearch   key = 47
 	modeKeyU        key = 117
+	modeKeyX        key = 120
 )
 
 // motion
@@ -634,6 +635,14 @@ func (e *Editor) ProcessKeyNormalMode() error {
 		}
 	case modeKeyU:
 		e.Undo()
+	case modeKeyX:
+		if e.cy == len(e.rows)-1 && e.cx == len(e.rows[e.cy].chars) {
+			// cursor is on the last row and one past the last character,
+			// no more character to delete to the right.
+			break
+		}
+		e.MoveCursor(keyArrowRight)
+		e.DeleteChar()
 	case escKey:
 		e.motionRegister = []key{}
 	default:

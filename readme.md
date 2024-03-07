@@ -29,6 +29,7 @@ go install github.com/amirali/virayeshgar@latest
 - [x] `o` and `O` insert mode
 - [x] `/` search mode
 - [x] `dd` cut single line
+- [x] `x` cut single character
 - [ ] `Ndd` cut N lines
 - [x] `yy` yank single line
 - [ ] `Nyy` yank N lines
