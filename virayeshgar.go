@@ -921,9 +921,9 @@ func (e Editor) rowRxToCx(row *Row, rx int) int {
 	for i, r := range row.chars {
 		if r == '\t' {
 			if e.syntax.tabstop != 0 {
-				rx += (e.syntax.tabstop) - (rx % e.syntax.tabstop)
+				curRx += (e.syntax.tabstop) - (curRx % e.syntax.tabstop)
 			} else {
-				rx += (tabstop) - (curRx % tabstop)
+				curRx += (tabstop) - (curRx % tabstop)
 			}
 		} else {
 			curRx += runewidth.RuneWidth(r)
