@@ -226,6 +226,8 @@ type EditorSyntax struct {
 	// Bit field that contains flags for whether to highlight numbers and
 	// whether to highlight strings.
 	flags int
+	// \t representation based of file syntax
+	tabstop int
 }
 
 var HLDB = []*EditorSyntax{
@@ -246,10 +248,11 @@ var HLDB = []*EditorSyntax{
 			"recover|", "rune|", "string|", "true|", "uint|", "uint8|",
 			"uintptr|", "any|",
 		},
-		scs:   "//",
-		mcs:   "/*",
-		mce:   "*/",
-		flags: HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
+		scs:     "//",
+		mcs:     "/*",
+		mce:     "*/",
+		flags:   HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
+		tabstop: 4,
 	},
 	{
 		filetype:  "lua",
@@ -260,10 +263,11 @@ var HLDB = []*EditorSyntax{
 
 			"and|", "false|", "nil|", "not|", "true|", "or|",
 		},
-		scs:   "--",
-		mcs:   "--[[",
-		mce:   "--]]",
-		flags: HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
+		scs:     "--",
+		mcs:     "--[[",
+		mce:     "--]]",
+		flags:   HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
+		tabstop: 2,
 	},
 	{
 		filetype:  "python",
@@ -288,10 +292,11 @@ var HLDB = []*EditorSyntax{
 			"sorted|", "staticmethod|", "sum|", "super|", "tuple|", "type|",
 			"vars|", "zip|",
 		},
-		scs:   "#",
-		mcs:   "",
-		mce:   "",
-		flags: HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
+		scs:     "#",
+		mcs:     "",
+		mce:     "",
+		flags:   HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
+		tabstop: 4,
 	},
 }
 
@@ -852,7 +857,7 @@ func (e *Editor) drawMessageBar(b *strings.Builder) {
 	}
 }
 
-func rowCxToRx(row *Row, cx int) int {
+func (e Editor) rowCxToRx(row *Row, cx int) int {
 	rx := 0
 	idx := cx
 	if cx > len(row.chars) {
@@ -860,7 +865,11 @@ func rowCxToRx(row *Row, cx int) int {
 	}
 	for _, r := range row.chars[:idx] {
 		if r == '\t' {
-			rx += (tabstop) - (rx % tabstop)
+			if e.syntax.tabstop != 0 {
+				rx += (e.syntax.tabstop) - (rx % e.syntax.tabstop)
+			} else {
+				rx += (tabstop) - (rx % tabstop)
+			}
 		} else {
 			rx += runewidth.RuneWidth(r)
 		}
@@ -868,11 +877,15 @@ func rowCxToRx(row *Row, cx int) int {
 	return rx
 }
 
-func rowRxToCx(row *Row, rx int) int {
+func (e Editor) rowRxToCx(row *Row, rx int) int {
 	curRx := 0
 	for i, r := range row.chars {
 		if r == '\t' {
-			curRx += (tabstop) - (curRx % tabstop)
+			if e.syntax.tabstop != 0 {
+				rx += (e.syntax.tabstop) - (rx % e.syntax.tabstop)
+			} else {
+				rx += (tabstop) - (curRx % tabstop)
+			}
 		} else {
 			curRx += runewidth.RuneWidth(r)
 		}
@@ -887,7 +900,7 @@ func rowRxToCx(row *Row, rx int) int {
 func (e *Editor) scroll() {
 	e.rx = 0
 	if e.cy < len(e.rows) {
-		e.rx = rowCxToRx(e.rows[e.cy], e.cx)
+		e.rx = e.rowCxToRx(e.rows[e.cy], e.cx)
 	}
 	// scroll up if the cursor is above the visible window.
 	if e.cy < e.rowOffset {
@@ -1131,7 +1144,13 @@ func (e *Editor) updateRow(row *Row) {
 			b.WriteRune(' ')
 			col++
 			// append spaces until we get to a tab stop
-			for col%tabstop != 0 {
+			var currentTabstop int
+			if e.syntax.tabstop != 0 {
+				currentTabstop = e.syntax.tabstop
+			} else {
+				currentTabstop = tabstop
+			}
+			for col%currentTabstop != 0 {
 				b.WriteRune(' ')
 				col++
 			}
@@ -1446,7 +1465,7 @@ func (e *Editor) Find() error {
 			if rx != -1 {
 				lastMatchRowIndex = current
 				e.cy = current
-				e.cx = rowRxToCx(row, rx)
+				e.cx = e.rowRxToCx(row, rx)
 				// set rowOffset to bottom so that the next scroll() will scroll
 				// upwards and the matching line will be at the top of the screen
 				e.rowOffset = len(e.rows)
