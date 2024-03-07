@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -156,10 +157,12 @@ type key int32
 
 // normal mode
 const (
-	navKeyH key = 104
-	navKeyJ key = 106
-	navKeyK key = 107
-	navKeyL key = 108
+	navKeyH          key = 104
+	navKeyJ          key = 106
+	navKeyK          key = 107
+	navKeyL          key = 108
+	navKeyLeftCurly  key = 123
+	navKeyRightCurly key = 125
 
 	escKey key = 27
 
@@ -366,11 +369,11 @@ func readKey() (key, error) {
 
 func (e *Editor) MoveCursor(k key) {
 	switch k {
-	case navKeyK, keyArrowUp:
+	case navKeyK, keyArrowUp, navKeyLeftCurly:
 		if e.cy != 0 {
 			e.cy--
 		}
-	case navKeyJ, keyArrowDown:
+	case navKeyJ, keyArrowDown, navKeyRightCurly:
 		if e.cy < len(e.rows) {
 			e.cy++
 		}
@@ -402,6 +405,40 @@ func (e *Editor) MoveCursor(k key) {
 	}
 	if e.cx > linelen {
 		e.cx = linelen
+	}
+}
+
+func (e *Editor) MoveCursorByRepeat(k key, repeat int) {
+	for i := 0; i < repeat; i++ {
+		e.MoveCursor(k)
+	}
+}
+
+func (e *Editor) JumpParagraph(k key) {
+	if row, _, err := getCursorPosition(); err == nil {
+		var targetSlice []*Row
+		if (row == 0 && k == navKeyLeftCurly) || (row == len(e.rows) && k == navKeyRightCurly) {
+			return
+		}
+		switch k {
+		case navKeyLeftCurly:
+			targetSlice = slices.Clone(e.rows[:row-1])
+			slices.Reverse(targetSlice)
+		case navKeyRightCurly:
+			targetSlice = e.rows[row+1:]
+		}
+		for _, rowFinder := range targetSlice {
+			l.Println(rowFinder.render, row)
+			e.MoveCursor(k)
+			if rowFinder.render == "" {
+				break
+			}
+		}
+		if k == navKeyRightCurly {
+			e.MoveCursor(k)
+		}
+	} else {
+		e.SetStatusMessage(err.Error())
 	}
 }
 
@@ -553,6 +590,9 @@ func (e *Editor) ProcessKeyNormalMode() error {
 	// case navKeyH, navKeyJ, navKeyK, navKeyL, keyArrowLeft, keyArrowDown, keyArrowUp, keyArrowRight:
 	case navKeyH, navKeyJ, navKeyK, navKeyL:
 		e.MoveCursor(k)
+
+	case navKeyLeftCurly, navKeyRightCurly:
+		e.JumpParagraph(k)
 
 	case modeKeyI:
 		e.SetMode(InsertMode)
