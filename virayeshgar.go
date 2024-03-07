@@ -419,32 +419,26 @@ func (e *Editor) MoveCursorByRepeat(k key, repeat int) {
 	}
 }
 
-// FIXME: Jump off with { the screen isn't possible
 func (e *Editor) JumpParagraph(k key) {
-	if row, _, err := getCursorPosition(); err == nil {
-		var targetSlice []*Row
-		if (row == 0 && k == navKeyLeftCurly) || (row == len(e.rows) && k == navKeyRightCurly) {
-			return
+	row := e.cy
+	var targetSlice []*Row
+	if (row == 0 && k == navKeyLeftCurly) || (row == len(e.rows) && k == navKeyRightCurly) {
+		return
+	}
+	l.Println("     ", row)
+	switch k {
+	case navKeyLeftCurly:
+		targetSlice = slices.Clone(e.rows[:row])
+		slices.Reverse(targetSlice)
+	case navKeyRightCurly:
+		targetSlice = e.rows[row+1:]
+	}
+	for _, rowFinder := range targetSlice {
+		l.Println(rowFinder.render, row)
+		e.MoveCursor(k)
+		if rowFinder.render == "" {
+			break
 		}
-		switch k {
-		case navKeyLeftCurly:
-			targetSlice = slices.Clone(e.rows[:row-1])
-			slices.Reverse(targetSlice)
-		case navKeyRightCurly:
-			targetSlice = e.rows[row+1:]
-		}
-		for _, rowFinder := range targetSlice {
-			l.Println(rowFinder.render, row)
-			e.MoveCursor(k)
-			if rowFinder.render == "" {
-				break
-			}
-		}
-		if k == navKeyRightCurly {
-			e.MoveCursor(k)
-		}
-	} else {
-		e.SetStatusMessage(err.Error())
 	}
 }
 
