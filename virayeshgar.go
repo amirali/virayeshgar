@@ -1488,6 +1488,10 @@ func main() {
 		}
 	}
 
+	if len(editor.rows) == 0 {
+		editor.rows = append(editor.rows, &Row{})
+	}
+
 	editor.SetStatusMessage("-- NORMAL --")
 
 	for {
