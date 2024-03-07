@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -1533,6 +1534,12 @@ func (e *Editor) Find() error {
 }
 
 func main() {
+	defer func() {
+		if r := recover(); r != nil {
+			l.Printf("---- panic stack ----\npanic: %#v\n%s\n---------------------", r, string(debug.Stack()))
+		}
+	}()
+
 	var editor Editor
 
 	if err := editor.Init(); err != nil {
