@@ -1,7 +1,5 @@
 package main
 
-// FIXME: Do we have problem with big files?
-
 import (
 	"bufio"
 	"bytes"
@@ -663,30 +661,16 @@ func (e *Editor) ProcessKeyNormalMode() error {
 }
 
 func (e *Editor) ProcessKeyCommandMode() error {
-	k, err := readKey()
+	var err error
+	e.command, err = e.Prompt(":%s", nil)
 	if err != nil {
 		return err
 	}
-	l.Printf("%#v\n", k)
-	switch k {
-	case escKey:
-		e.mode = NormalMode
-		e.command = ""
-		e.SetStatusMessage("-- NORMAL --")
 
-	case keyBackspace:
-		e.command = e.command[:len(e.command)-1]
-		e.SetStatusMessage(e.command)
-
-	case keyEnter:
+	if e.command != "" {
 		return e.ExecuteCommand()
-
-	default:
-		e.command += string(rune(k))
-		e.SetStatusMessage(e.command)
 	}
 
-	e.quitCounter = 0
 	return nil
 }
 
@@ -1467,6 +1451,7 @@ func (e *Editor) DeleteRow(at int) {
 }
 
 // FIXME: Sometimes the patterm match will match the line above the rowOffset
+// FIXME: Crashes sometimes in big files
 func (e *Editor) Find() error {
 	savedCx := e.cx
 	savedCy := e.cy
