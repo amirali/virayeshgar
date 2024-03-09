@@ -1,4 +1,4 @@
-package main
+package editor
 
 import (
 	"bufio"
@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -18,54 +17,27 @@ import (
 
 	"github.com/mattn/go-runewidth"
 	"golang.org/x/sys/unix"
-)
 
-var (
-	outfile, _ = os.Create("./virayeshgar.keys.log")
-	l          = log.New(outfile, "", 0)
+	actions "github.com/amirali/virayeshgar/editor/actions"
+	keys "github.com/amirali/virayeshgar/editor/keys"
+	modes "github.com/amirali/virayeshgar/editor/modes"
+	"github.com/amirali/virayeshgar/editor/syntax"
+	"github.com/amirali/virayeshgar/tools"
 )
 
 var version = "0.0.0dev"
 
 const tabstop = 8
 
-var (
-	stdinfd  = int(os.Stdin.Fd())
-	stdoutfd = int(os.Stdout.Fd())
-)
-
 var ErrQuitEditor = errors.New("quit editor")
 var ErrUnknownMode = errors.New("unknown mode")
 var ErrUnknownCommand = errors.New("unknown command")
 var ErrUnkownMotion = errors.New("unknown motion")
 
-type Mode struct {
-	name          string
-	statusMessage string
-}
-
 var (
-	NormalMode  Mode = Mode{name: "normal", statusMessage: "-- NORMAL --"}
-	InsertMode       = Mode{name: "insert", statusMessage: "-- INSERT --"}
-	CommandMode      = Mode{name: "command"}
+	stdinfd  = int(os.Stdin.Fd())
+	stdoutfd = int(os.Stdout.Fd())
 )
-
-type action int
-
-const (
-	Cut action = iota
-	Paste
-	Edit
-)
-
-type UndoNode struct {
-	undoType   action
-	beforeRows []*Row
-	afterRows  []*Row
-	// NOTE: considering one line changes for now
-	fromIdx int
-	toIdx   int
-}
 
 type Editor struct {
 	cx int
@@ -78,7 +50,7 @@ type Editor struct {
 	screenRows int
 	screenCols int
 
-	rows []*Row
+	Rows []*Row
 
 	dirty int
 
@@ -89,16 +61,28 @@ type Editor struct {
 	statusmsg     string
 	statusmsgTime time.Time
 
-	syntax *EditorSyntax
+	syntax *syntax.EditorSyntax
 
 	origTermios *unix.Termios
 
-	mode           Mode
+	mode           modes.Mode
 	command        string
-	motionRegister []key
+	motionRegister []keys.Key
 	yankRegister   string
 
+	// TODO: Implement this as an actual tree
 	undoPath []*UndoNode
+
+	logger *log.Logger
+}
+
+type UndoNode struct {
+	undoType   actions.Action
+	beforeRows []*Row
+	afterRows  []*Row
+	// NOTE: considering one line changes for now
+	fromIdx int
+	toIdx   int
 }
 
 func enableRawMode() (*unix.Termios, error) {
@@ -118,15 +102,17 @@ func enableRawMode() (*unix.Termios, error) {
 	return t, nil
 }
 
-func (e *Editor) Init() error {
+func (e *Editor) Init(logger *log.Logger) error {
 	termios, err := enableRawMode()
+
+	e.logger = logger
 
 	if err != nil {
 		return err
 	}
 
 	e.origTermios = termios
-	e.mode = NormalMode
+	e.mode = modes.NormalMode
 	e.undoPath = make([]*UndoNode, 0)
 
 	ws, err := unix.IoctlGetWinsize(stdoutfd, unix.TIOCGWINSZ)
@@ -134,7 +120,7 @@ func (e *Editor) Init() error {
 		if _, err = os.Stdout.Write([]byte("\x1b[999C\x1b[999B")); err != nil {
 			return err
 		}
-		if row, col, err := getCursorPosition(); err == nil {
+		if row, col, err := tools.GetCursorPosition(); err == nil {
 			e.screenRows = row
 			e.screenCols = col
 			return nil
@@ -154,159 +140,6 @@ func (e *Editor) Close() error {
 	return unix.IoctlSetTermios(stdinfd, ioctlWriteTermios, e.origTermios)
 }
 
-type key int32
-
-// normal mode
-const (
-	navKeyH          key = 104
-	navKeyJ          key = 106
-	navKeyK          key = 107
-	navKeyL          key = 108
-	navKeyLeftCurly  key = 123
-	navKeyRightCurly key = 125
-	navKeyGg         key = 103
-	navKeyCapitalG   key = 71
-
-	escKey key = 27
-
-	modeKeyI        key = 105
-	modeKeySmallA   key = 97
-	modeKeyCapitalA key = 65
-	modeKeySmallO   key = 111
-	modeKeyCapitalO key = 79
-	modeKeyCol      key = 58
-	modeKeySearch   key = 47
-	modeKeyU        key = 117
-	modeKeyX        key = 120
-)
-
-// motion
-const (
-	motionKeyD        key = 100
-	motionKeyY        key = 121
-	motionKeySmallP   key = 112
-	motionKeyCapitalP key = 80
-)
-
-// insert mode
-const (
-	keyEnter     key = 10
-	keyBackspace key = 127
-
-	keyArrowLeft key = iota + 1000
-	keyArrowRight
-	keyArrowUp
-	keyArrowDown
-	keyDelete
-	keyPageUp
-	keyPageDown
-	keyHome
-	keyEnd
-)
-
-const (
-	hlNormal uint8 = iota
-	hlComment
-	hlMlComment
-	hlKeyword1
-	hlKeyword2
-	hlString
-	hlNumber
-	hlMatch
-)
-
-const (
-	HL_HIGHLIGHT_NUMBERS = 1 << iota
-	HL_HIGHLIGHT_STRINGS
-)
-
-type EditorSyntax struct {
-	filetype  string
-	filematch []string
-	keywords  []string
-	// single line comment section
-	scs string
-	// multi line comment start pattern
-	mcs string
-	// multi line comment end pattern
-	mce string
-	// Bit field that contains flags for whether to highlight numbers and
-	// whether to highlight strings.
-	flags int
-	// \t representation based of file syntax
-	tabstop int
-}
-
-var HLDB = []*EditorSyntax{
-	{
-		filetype:  "go",
-		filematch: []string{".go"},
-		keywords: []string{
-			"break", "default", "func", "interface", "select", "case", "defer",
-			"go", "map", "struct", "chan", "else", "goto", "package", "switch",
-			"const", "fallthrough", "if", "range", "type", "continue", "for",
-			"import", "return", "var",
-
-			"append|", "bool|", "byte|", "cap|", "close|", "complex|",
-			"complex64|", "complex128|", "error|", "uint16|", "copy|", "false|",
-			"float32|", "float64|", "imag|", "int|", "int8|", "int16|",
-			"uint32|", "int32|", "int64|", "iota|", "len|", "make|", "new|",
-			"nil|", "panic|", "uint64|", "print|", "println|", "real|",
-			"recover|", "rune|", "string|", "true|", "uint|", "uint8|",
-			"uintptr|", "any|",
-		},
-		scs:     "//",
-		mcs:     "/*",
-		mce:     "*/",
-		flags:   HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
-		tabstop: 4,
-	},
-	{
-		filetype:  "lua",
-		filematch: []string{".lua"},
-		keywords: []string{
-			"end", "in", "repeat", "break", "local", "return", "do", "for",
-			"then", "else", "function", "elseif", "if", "until", "while",
-
-			"and|", "false|", "nil|", "not|", "true|", "or|",
-		},
-		scs:     "--",
-		mcs:     "--[[",
-		mce:     "--]]",
-		flags:   HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
-		tabstop: 2,
-	},
-	{
-		filetype:  "python",
-		filematch: []string{".py"},
-		keywords: []string{
-			"as", "assert", "break", "class", "continue", "def", "del",
-			"elif", "else", "except", "finally", "for", "from", "global",
-			"if", "import", "in", "lambda", "nonlocal", "pass", "raise",
-			"return", "try", "while", "with", "yield",
-
-			"and|", "False|", "is|", "None|", "not|", "or|", "True|",
-			"int|", "float|", "bool|", "str|", "abs|", "all|", "any|",
-			"ascii|", "bin|", "bytearray|", "bytes|", "callable|", "chr|",
-			"classmethod|", "compile|", "complex|", "delattr|", "dict|",
-			"dir|", "divmod|", "enumerate|", "eval|", "exec|", "filter|",
-			"format|", "frozenset|", "getattr|", "globals|", "hasattr|",
-			"hash|", "help|", "hex|", "id|", "input|", "isinstance|",
-			"issubclass|", "iter|", "len|", "list|", "locals|", "map|",
-			"max|", "memoryview|", "min|", "next|", "object|", "oct|",
-			"open|", "ord|", "pow|", "print|", "property|", "range|",
-			"repr|", "reversed|", "round|", "set|", "setattr|", "slice|",
-			"sorted|", "staticmethod|", "sum|", "super|", "tuple|", "type|",
-			"vars|", "zip|",
-		},
-		scs:     "#",
-		mcs:     "",
-		mce:     "",
-		flags:   HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
-		tabstop: 4,
-	},
-}
-
 type Row struct {
 	// Index within the file.
 	idx int
@@ -320,12 +153,7 @@ type Row struct {
 	hasUnclosedComment bool
 }
 
-// ctrl returns a byte resulting from pressing the given ASCII character with the ctrl-key.
-func ctrl(char byte) byte {
-	return char & 0x1f
-}
-
-func die(err error) {
+func Die(err error) {
 	os.Stdout.WriteString("\x1b[2J") // clear the screen
 	os.Stdout.WriteString("\x1b[H")  // reposition the cursor
 	fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -333,7 +161,7 @@ func die(err error) {
 }
 
 // readKey reads a key press input from stdin.
-func readKey() (key, error) {
+func readKey() (keys.Key, error) {
 	buf := make([]byte, 4)
 	for {
 		n, err := os.Stdin.Read(buf)
@@ -344,54 +172,54 @@ func readKey() (key, error) {
 			buf = bytes.TrimRightFunc(buf, func(r rune) bool { return r == 0 })
 			switch {
 			case bytes.Equal(buf, []byte("\x1b[A")):
-				return keyArrowUp, nil
+				return keys.KeyArrowUp, nil
 			case bytes.Equal(buf, []byte("\x1b[B")):
-				return keyArrowDown, nil
+				return keys.KeyArrowDown, nil
 			case bytes.Equal(buf, []byte("\x1b[C")):
-				return keyArrowRight, nil
+				return keys.KeyArrowRight, nil
 			case bytes.Equal(buf, []byte("\x1b[D")):
-				return keyArrowLeft, nil
+				return keys.KeyArrowLeft, nil
 			case bytes.Equal(buf, []byte("\x1b[1~")), bytes.Equal(buf, []byte("\x1b[7~")),
 				bytes.Equal(buf, []byte("\x1b[H")), bytes.Equal(buf, []byte("\x1bOH")):
-				return keyHome, nil
+				return keys.KeyHome, nil
 			case bytes.Equal(buf, []byte("\x1b[4~")), bytes.Equal(buf, []byte("\x1b[8~")),
 				bytes.Equal(buf, []byte("\x1b[F")), bytes.Equal(buf, []byte("\x1bOF")):
-				return keyEnd, nil
+				return keys.KeyEnd, nil
 			case bytes.Equal(buf, []byte("\x1b[3~")):
-				return keyDelete, nil
+				return keys.KeyDelete, nil
 			case bytes.Equal(buf, []byte("\x1b[5~")):
-				return keyPageUp, nil
+				return keys.KeyPageUp, nil
 			case bytes.Equal(buf, []byte("\x1b[6~")):
-				return keyPageDown, nil
+				return keys.KeyPageDown, nil
 
 			default:
-				return key(buf[0]), nil
+				return keys.Key(buf[0]), nil
 			}
 		}
 	}
 }
 
-func (e *Editor) MoveCursor(k key) {
+func (e *Editor) MoveCursor(k keys.Key) {
 	switch k {
-	case navKeyK, keyArrowUp, navKeyLeftCurly:
+	case keys.NavKeyK, keys.KeyArrowUp, keys.NavKeyLeftCurly:
 		if e.cy != 0 {
 			e.cy--
 		}
-	case navKeyJ, keyArrowDown, navKeyRightCurly:
-		if e.cy < len(e.rows) {
+	case keys.NavKeyJ, keys.KeyArrowDown, keys.NavKeyRightCurly:
+		if e.cy < len(e.Rows) {
 			e.cy++
 		}
-	case navKeyH, keyArrowLeft:
+	case keys.NavKeyH, keys.KeyArrowLeft:
 		if e.cx != 0 {
 			e.cx--
 		} else if e.cy > 0 {
 			e.cy--
-			e.cx = len(e.rows[e.cy].chars)
+			e.cx = len(e.Rows[e.cy].chars)
 		}
-	case navKeyL, keyArrowRight:
+	case keys.NavKeyL, keys.KeyArrowRight:
 		linelen := -1
-		if e.cy < len(e.rows) {
-			linelen = len(e.rows[e.cy].chars)
+		if e.cy < len(e.Rows) {
+			linelen = len(e.Rows[e.cy].chars)
 		}
 		if linelen >= 0 && e.cx < linelen {
 			e.cx++
@@ -404,36 +232,36 @@ func (e *Editor) MoveCursor(k key) {
 	// If the cursor ends up past the end of the line it's on
 	// put the cursor at the end of the line.
 	var linelen int
-	if e.cy < len(e.rows) {
-		linelen = len(e.rows[e.cy].chars)
+	if e.cy < len(e.Rows) {
+		linelen = len(e.Rows[e.cy].chars)
 	}
 	if e.cx > linelen {
 		e.cx = linelen
 	}
 }
 
-func (e *Editor) MoveCursorByRepeat(k key, repeat int) {
+func (e *Editor) MoveCursorByRepeat(k keys.Key, repeat int) {
 	for i := 0; i < repeat; i++ {
 		e.MoveCursor(k)
 	}
 }
 
-func (e *Editor) JumpParagraph(k key) {
+func (e *Editor) JumpParagraph(k keys.Key) {
 	row := e.cy
 	var targetSlice []*Row
-	if (row == 0 && k == navKeyLeftCurly) || (row == len(e.rows) && k == navKeyRightCurly) {
+	if (row == 0 && k == keys.NavKeyLeftCurly) || (row == len(e.Rows) && k == keys.NavKeyRightCurly) {
 		return
 	}
-	l.Println("     ", row)
+	e.logger.Println("     ", row)
 	switch k {
-	case navKeyLeftCurly:
-		targetSlice = slices.Clone(e.rows[:row])
+	case keys.NavKeyLeftCurly:
+		targetSlice = slices.Clone(e.Rows[:row])
 		slices.Reverse(targetSlice)
-	case navKeyRightCurly:
-		targetSlice = e.rows[row+1:]
+	case keys.NavKeyRightCurly:
+		targetSlice = e.Rows[row+1:]
 	}
 	for _, rowFinder := range targetSlice {
-		l.Println(rowFinder.render, row)
+		e.logger.Println(rowFinder.render, row)
 		e.MoveCursor(k)
 		if rowFinder.render == "" {
 			break
@@ -447,26 +275,26 @@ func (e *Editor) ProcessKeyInsertMode() error {
 		return err
 	}
 	switch k {
-	case keyEnter:
+	case keys.KeyEnter:
 		e.InsertNewline()
 
-	case keyBackspace:
+	case keys.KeyBackspace:
 		e.DeleteChar()
 
-	case keyDelete:
-		if e.cy == len(e.rows)-1 && e.cx == len(e.rows[e.cy].chars) {
+	case keys.KeyDelete:
+		if e.cy == len(e.Rows)-1 && e.cx == len(e.Rows[e.cy].chars) {
 			// cursor is on the last row and one past the last character,
 			// no more character to delete to the right.
 			break
 		}
-		e.MoveCursor(keyArrowRight)
+		e.MoveCursor(keys.KeyArrowRight)
 		e.DeleteChar()
 
 	// case keyArrowLeft, keyArrowDown, keyArrowUp, keyArrowRight:
 	// 	e.MoveCursor(k)
 
-	case escKey:
-		e.SetMode(NormalMode)
+	case keys.EscKey:
+		e.SetMode(modes.NormalMode)
 
 	default:
 		e.InsertChar(rune(k))
@@ -476,28 +304,16 @@ func (e *Editor) ProcessKeyInsertMode() error {
 	return nil
 }
 
-func keySequenceEqual(a, b []key) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i, v := range a {
-		if v != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func (e *Editor) SetMode(mode Mode) {
+func (e *Editor) SetMode(mode modes.Mode) {
 	e.mode = mode
-	e.SetStatusMessage(mode.statusMessage)
+	e.SetStatusMessage(mode.StatusMessage)
 
 	switch mode {
-	case InsertMode:
+	case modes.InsertMode:
 		// FIXME: WTF?
-		newRow := *e.rows[e.cy]
-		e.undoPath = append(e.undoPath, &UndoNode{undoType: Edit, fromIdx: e.cy, toIdx: e.cy, beforeRows: []*Row{&newRow}})
-	case NormalMode:
+		newRow := *e.Rows[e.cy]
+		e.undoPath = append(e.undoPath, &UndoNode{undoType: actions.Edit, fromIdx: e.cy, toIdx: e.cy, beforeRows: []*Row{&newRow}})
+	case modes.NormalMode:
 		// node := e.undoPath[len(e.undoPath)-1]
 		// node.toIdx = e.cy
 	}
@@ -505,48 +321,25 @@ func (e *Editor) SetMode(mode Mode) {
 
 func (e *Editor) ExecuteMotion() error {
 	if len(e.motionRegister) > 3 {
-		e.motionRegister = []key{}
+		e.motionRegister = []keys.Key{}
 		return ErrUnkownMotion
 	}
 	switch {
-	case keySequenceEqual(e.motionRegister, []key{motionKeyD, motionKeyD}):
+	case keys.KeySequenceEqual(e.motionRegister, []keys.Key{keys.MotionKeyD, keys.MotionKeyD}):
 		e.CutRow()
-		e.motionRegister = []key{}
-	case keySequenceEqual(e.motionRegister, []key{motionKeySmallP}):
+		e.motionRegister = []keys.Key{}
+	case keys.KeySequenceEqual(e.motionRegister, []keys.Key{keys.MotionKeySmallP}):
 		e.PasteRow(e.cy + 1)
-		e.motionRegister = []key{}
-	case keySequenceEqual(e.motionRegister, []key{motionKeyCapitalP}):
+		e.motionRegister = []keys.Key{}
+	case keys.KeySequenceEqual(e.motionRegister, []keys.Key{keys.MotionKeyCapitalP}):
 		e.PasteRow(e.cy)
-		e.motionRegister = []key{}
-	case keySequenceEqual(e.motionRegister, []key{motionKeyY, motionKeyY}):
+		e.motionRegister = []keys.Key{}
+	case keys.KeySequenceEqual(e.motionRegister, []keys.Key{keys.MotionKeyY, keys.MotionKeyY}):
 		e.YankRow()
 
-		e.motionRegister = []key{}
+		e.motionRegister = []keys.Key{}
 	}
 	return nil
-}
-
-func insertToSlice[T any](s []T, value T, at int) []T {
-	if at >= 0 && at <= len(s) {
-		newSlice := make([]T, len(s)+1)
-		copy(newSlice[:at], s[:at])
-		newSlice[at] = value
-		copy(newSlice[at+1:], s[at:])
-		s = newSlice
-	}
-
-	return s
-}
-
-func removeFromSlice[T any](s []T, at int) []T {
-	if at >= 0 && at <= len(s) {
-		newSlice := make([]T, len(s)-1)
-		copy(newSlice[:at], s[:at])
-		copy(newSlice[at:], s[at+1:])
-		s = newSlice
-	}
-
-	return s
 }
 
 func (e *Editor) Undo() {
@@ -560,19 +353,19 @@ func (e *Editor) Undo() {
 	e.undoPath = e.undoPath[:undoLength-1]
 
 	switch lastUndoNode.undoType {
-	case Cut:
+	case actions.Cut:
 		for i := 0; i < lastUndoNode.toIdx-lastUndoNode.fromIdx+1; i++ {
-			e.rows = insertToSlice(e.rows, lastUndoNode.beforeRows[i], lastUndoNode.fromIdx+i)
+			e.Rows = tools.InsertToSlice(e.Rows, lastUndoNode.beforeRows[i], lastUndoNode.fromIdx+i)
 		}
-	case Paste:
+	case actions.Paste:
 		for i := 0; i < lastUndoNode.toIdx-lastUndoNode.fromIdx+1; i++ {
-			e.rows = removeFromSlice(e.rows, lastUndoNode.fromIdx+i)
+			e.Rows = tools.RemoveFromSlice(e.Rows, lastUndoNode.fromIdx+i)
 		}
-	case Edit:
-		l.Printf("before rows: %#v", lastUndoNode.beforeRows[0])
+	case actions.Edit:
+		e.logger.Printf("before rows: %#v", lastUndoNode.beforeRows[0])
 		for i := 0; i < lastUndoNode.toIdx-lastUndoNode.fromIdx+1; i++ {
-			l.Println(lastUndoNode.fromIdx+i, i)
-			e.rows[lastUndoNode.fromIdx+i] = lastUndoNode.beforeRows[i]
+			e.logger.Println(lastUndoNode.fromIdx+i, i)
+			e.Rows[lastUndoNode.fromIdx+i] = lastUndoNode.beforeRows[i]
 		}
 	}
 }
@@ -583,52 +376,52 @@ func (e *Editor) ProcessKeyNormalMode() error {
 		return err
 	}
 	e.SetStatusMessage("-- NORMAL --")
-	l.Printf("%#v\n", k)
+	e.logger.Printf("%#v\n", k)
 	switch k {
 
 	// case navKeyH, navKeyJ, navKeyK, navKeyL, keyArrowLeft, keyArrowDown, keyArrowUp, keyArrowRight:
-	case navKeyH, navKeyJ, navKeyK, navKeyL:
+	case keys.NavKeyH, keys.NavKeyJ, keys.NavKeyK, keys.NavKeyL:
 		e.MoveCursor(k)
 
-	case navKeyLeftCurly, navKeyRightCurly:
+	case keys.NavKeyLeftCurly, keys.NavKeyRightCurly:
 		e.JumpParagraph(k)
 
-	case navKeyGg:
+	case keys.NavKeyGg:
 		e.cy = 0
 
-	case navKeyCapitalG:
-		e.cy = len(e.rows) - 1
+	case keys.NavKeyCapitalG:
+		e.cy = len(e.Rows) - 1
 
-	case modeKeyI:
-		e.SetMode(InsertMode)
-	case modeKeyCol:
-		e.mode = CommandMode
+	case keys.ModeKeyI:
+		e.SetMode(modes.InsertMode)
+	case keys.ModeKeyCol:
+		e.mode = modes.CommandMode
 		e.command = ""
 		e.SetStatusMessage(e.command)
 
-	case modeKeySmallA:
-		e.MoveCursor(navKeyL)
-		e.SetMode(InsertMode)
+	case keys.ModeKeySmallA:
+		e.MoveCursor(keys.NavKeyL)
+		e.SetMode(modes.InsertMode)
 
-	case modeKeyCapitalA:
-		if e.cy < len(e.rows) {
-			e.cx = len(e.rows[e.cy].chars)
+	case keys.ModeKeyCapitalA:
+		if e.cy < len(e.Rows) {
+			e.cx = len(e.Rows[e.cy].chars)
 		}
-		e.SetMode(InsertMode)
-	case modeKeySmallO:
-		if e.cy < len(e.rows) {
-			e.cx = len(e.rows[e.cy].chars)
+		e.SetMode(modes.InsertMode)
+	case keys.ModeKeySmallO:
+		if e.cy < len(e.Rows) {
+			e.cx = len(e.Rows[e.cy].chars)
 		}
 		e.InsertNewline()
-		e.SetMode(InsertMode)
-	case modeKeyCapitalO:
-		if e.cy < len(e.rows) {
+		e.SetMode(modes.InsertMode)
+	case keys.ModeKeyCapitalO:
+		if e.cy < len(e.Rows) {
 			e.cx = 0
 		}
 		e.InsertNewline()
-		e.MoveCursor(navKeyK)
-		e.SetMode(InsertMode)
-	case modeKeySearch:
+		e.MoveCursor(keys.NavKeyK)
+		e.SetMode(modes.InsertMode)
+	case keys.ModeKeySearch:
 		err := e.Find()
 		if err != nil {
 			if err == ErrPromptCanceled {
@@ -637,18 +430,18 @@ func (e *Editor) ProcessKeyNormalMode() error {
 				return err
 			}
 		}
-	case modeKeyU:
+	case keys.ModeKeyU:
 		e.Undo()
-	case modeKeyX:
-		if e.cy == len(e.rows)-1 && e.cx == len(e.rows[e.cy].chars) {
+	case keys.ModeKeyX:
+		if e.cy == len(e.Rows)-1 && e.cx == len(e.Rows[e.cy].chars) {
 			// cursor is on the last row and one past the last character,
 			// no more character to delete to the right.
 			break
 		}
-		e.MoveCursor(keyArrowRight)
+		e.MoveCursor(keys.KeyArrowRight)
 		e.DeleteChar()
-	case escKey:
-		e.motionRegister = []key{}
+	case keys.EscKey:
+		e.motionRegister = []keys.Key{}
 	default:
 		e.motionRegister = append(e.motionRegister, k)
 		err = e.ExecuteMotion()
@@ -677,13 +470,13 @@ func (e *Editor) ProcessKeyCommandMode() error {
 
 func (e *Editor) ProcessKey() error {
 	switch e.mode {
-	case NormalMode:
+	case modes.NormalMode:
 		return e.ProcessKeyNormalMode()
 
-	case InsertMode:
+	case modes.InsertMode:
 		return e.ProcessKeyInsertMode()
 
-	case CommandMode:
+	case modes.CommandMode:
 		return e.ProcessKeyCommandMode()
 
 	default:
@@ -696,7 +489,7 @@ func (e *Editor) ExecuteCommand() error {
 
 	commandParts := strings.Split(e.command, " ")
 
-	e.SetMode(NormalMode)
+	e.SetMode(modes.NormalMode)
 
 	switch commandParts[0] {
 	case "w":
@@ -742,10 +535,10 @@ func (e *Editor) ExecuteCommand() error {
 		return ErrQuitEditor
 
 	case "syntax":
-		for _, syntax := range HLDB {
-			if syntax.filetype == commandParts[1] {
+		for _, syntax := range syntax.HLDB {
+			if syntax.Filetype == commandParts[1] {
 				e.syntax = syntax
-				for _, row := range e.rows {
+				for _, row := range e.Rows {
 					e.updateHighlight(row)
 				}
 			}
@@ -763,11 +556,11 @@ func (e *Editor) ExecuteCommand() error {
 func (e *Editor) drawRows(b *strings.Builder) {
 	for y := 0; y < e.screenRows; y++ {
 		filerow := y + e.rowOffset
-		if filerow >= len(e.rows) {
-			if len(e.rows) == 0 && y == e.screenRows/3 {
+		if filerow >= len(e.Rows) {
+			if len(e.Rows) == 0 && y == e.screenRows/3 {
 				welcomeMsg := fmt.Sprintf("Virayeshgar v%s", version)
 				if runewidth.StringWidth(welcomeMsg) > e.screenCols {
-					welcomeMsg = utf8Slice(welcomeMsg, 0, e.screenCols)
+					welcomeMsg = tools.Utf8Slice(welcomeMsg, 0, e.screenCols)
 				}
 				padding := (e.screenCols - runewidth.StringWidth(welcomeMsg)) / 2
 				if padding > 0 {
@@ -787,12 +580,12 @@ func (e *Editor) drawRows(b *strings.Builder) {
 				line string
 				hl   []uint8
 			)
-			if runewidth.StringWidth(e.rows[filerow].render) > e.colOffset {
-				line = utf8Slice(
-					e.rows[filerow].render,
+			if runewidth.StringWidth(e.Rows[filerow].render) > e.colOffset {
+				line = tools.Utf8Slice(
+					e.Rows[filerow].render,
 					e.colOffset,
-					utf8.RuneCountInString(e.rows[filerow].render))
-				hl = e.rows[filerow].hl[e.colOffset:]
+					utf8.RuneCountInString(e.Rows[filerow].render))
+				hl = e.Rows[filerow].hl[e.colOffset:]
 			}
 			if runewidth.StringWidth(line) > e.screenCols {
 				line = runewidth.Truncate(line, e.screenCols, "")
@@ -800,8 +593,8 @@ func (e *Editor) drawRows(b *strings.Builder) {
 			}
 			currentColor := ""          // keep track of color to detect color change
 			b.WriteString("\x1b[0;90m") // use inverted colors
-			maxLength := len(fmt.Sprint(len(e.rows)))
-			b.WriteString(fmt.Sprintf("%*d ", maxLength, e.rows[filerow].idx+1))
+			maxLength := len(fmt.Sprint(len(e.Rows)))
+			b.WriteString(fmt.Sprintf("%*d ", maxLength, e.Rows[filerow].idx+1))
 			b.WriteString("\x1b[m") // reset all formatting
 			for i, r := range []rune(line) {
 				if unicode.IsControl(r) {
@@ -817,14 +610,14 @@ func (e *Editor) drawRows(b *strings.Builder) {
 						// restore the current color
 						b.WriteString(fmt.Sprintf("\x1b[%sm", currentColor))
 					}
-				} else if hl[i] == hlNormal {
+				} else if hl[i] == syntax.HlNormal {
 					if currentColor != "" {
 						currentColor = ""
 						b.WriteString("\x1b[39m")
 					}
 					b.WriteRune(r)
 				} else {
-					color := syntaxToColor(hl[i])
+					color := syntax.SyntaxToColor(hl[i])
 					if color != currentColor {
 						currentColor = color
 						b.WriteString(fmt.Sprintf("\x1b[%sm", color))
@@ -850,16 +643,16 @@ func (e *Editor) drawStatusBar(b *strings.Builder) {
 	if e.dirty > 0 {
 		dirtyStatus = "(modified)"
 	}
-	lmsg := fmt.Sprintf("%.20s - %d lines - %s", filename, len(e.rows), dirtyStatus)
+	lmsg := fmt.Sprintf("%.20s - %d lines - %s", filename, len(e.Rows), dirtyStatus)
 	if runewidth.StringWidth(lmsg) > e.screenCols {
 		lmsg = runewidth.Truncate(lmsg, e.screenCols, "...")
 	}
 	b.WriteString(lmsg)
 	filetype := "no filetype"
 	if e.syntax != nil {
-		filetype = e.syntax.filetype
+		filetype = e.syntax.Filetype
 	}
-	row, col, _ := getCursorPosition()
+	row, col, _ := tools.GetCursorPosition()
 
 	motionString := ""
 	for _, motion := range e.motionRegister {
@@ -877,11 +670,6 @@ func (e *Editor) drawStatusBar(b *strings.Builder) {
 		l++
 	}
 	b.Write([]byte("\r\n"))
-}
-
-// utf8Slice slice the given string by utf8 character.
-func utf8Slice(s string, start, end int) string {
-	return string([]rune(s)[start:end])
 }
 
 func (e *Editor) drawMessageBar(b *strings.Builder) {
@@ -904,8 +692,8 @@ func (e Editor) rowCxToRx(row *Row, cx int) int {
 	}
 	for _, r := range row.chars[:idx] {
 		if r == '\t' {
-			if e.syntax.tabstop != 0 {
-				rx += (e.syntax.tabstop) - (rx % e.syntax.tabstop)
+			if e.syntax.Tabstop != 0 {
+				rx += (e.syntax.Tabstop) - (rx % e.syntax.Tabstop)
 			} else {
 				rx += (tabstop) - (rx % tabstop)
 			}
@@ -920,8 +708,8 @@ func (e Editor) rowRxToCx(row *Row, rx int) int {
 	curRx := 0
 	for i, r := range row.chars {
 		if r == '\t' {
-			if e.syntax.tabstop != 0 {
-				curRx += (e.syntax.tabstop) - (curRx % e.syntax.tabstop)
+			if e.syntax.Tabstop != 0 {
+				curRx += (e.syntax.Tabstop) - (curRx % e.syntax.Tabstop)
 			} else {
 				curRx += (tabstop) - (curRx % tabstop)
 			}
@@ -938,8 +726,8 @@ func (e Editor) rowRxToCx(row *Row, rx int) int {
 
 func (e *Editor) scroll() {
 	e.rx = 0
-	if e.cy < len(e.rows) {
-		e.rx = e.rowCxToRx(e.rows[e.cy], e.cx)
+	if e.cy < len(e.Rows) {
+		e.rx = e.rowCxToRx(e.Rows[e.cy], e.cx)
 	}
 	// scroll up if the cursor is above the visible window.
 	if e.cy < e.rowOffset {
@@ -973,7 +761,7 @@ func (e *Editor) Render() {
 	e.drawMessageBar(&b)
 
 	// position the cursor
-	b.WriteString(fmt.Sprintf("\x1b[%d;%dH", (e.cy-e.rowOffset)+1, (e.rx-e.colOffset)+1+len(fmt.Sprint(len(e.rows)))+1))
+	b.WriteString(fmt.Sprintf("\x1b[%d;%dH", (e.cy-e.rowOffset)+1, (e.rx-e.colOffset)+1+len(fmt.Sprint(len(e.Rows)))+1))
 	// show the cursor
 	b.Write([]byte("\x1b[?25h"))
 	os.Stdout.WriteString(b.String())
@@ -984,19 +772,9 @@ func (e *Editor) SetStatusMessage(format string, a ...interface{}) {
 	e.statusmsgTime = time.Now()
 }
 
-func getCursorPosition() (row, col int, err error) {
-	if _, err = os.Stdout.Write([]byte("\x1b[6n")); err != nil {
-		return
-	}
-	if _, err = fmt.Fscanf(os.Stdin, "\x1b[%d;%d", &row, &col); err != nil {
-		return
-	}
-	return
-}
-
 func (e *Editor) rowsToString() string {
 	var b strings.Builder
-	for _, row := range e.rows {
+	for _, row := range e.Rows {
 		b.WriteString(string(row.chars))
 		b.WriteRune('\n')
 	}
@@ -1012,7 +790,7 @@ var ErrPromptCanceled = fmt.Errorf("user canceled the input prompt")
 // if the user cancels the input.
 // It takes an optional callback function, which takes the query string and
 // the last key pressed.
-func (e *Editor) Prompt(prompt string, cb func(query string, k key)) (string, error) {
+func (e *Editor) Prompt(prompt string, cb func(query string, k keys.Key)) (string, error) {
 	var b strings.Builder
 	for {
 		e.SetStatusMessage(prompt, b.String())
@@ -1022,20 +800,20 @@ func (e *Editor) Prompt(prompt string, cb func(query string, k key)) (string, er
 		if err != nil {
 			return "", err
 		}
-		if k == keyDelete || k == keyBackspace || k == key(ctrl('h')) {
+		if k == keys.KeyDelete || k == keys.KeyBackspace || k == keys.Key(keys.Ctrl('h')) {
 			if b.Len() > 0 {
 				bytes := []byte(b.String())
 				_, size := utf8.DecodeLastRune(bytes)
 				b.Reset()
 				b.WriteString(string(bytes[:len(bytes)-size]))
 			}
-		} else if k == key('\x1b') {
+		} else if k == keys.Key('\x1b') {
 			e.SetStatusMessage("")
 			if cb != nil {
 				cb(b.String(), k)
 			}
 			return "", ErrPromptCanceled
-		} else if k == keyEnter {
+		} else if k == keys.KeyEnter {
 			if b.Len() > 0 {
 				e.SetStatusMessage("")
 				if cb != nil {
@@ -1043,7 +821,7 @@ func (e *Editor) Prompt(prompt string, cb func(query string, k key)) (string, er
 				}
 				return b.String(), nil
 			}
-		} else if !unicode.IsControl(rune(k)) && !isArrowKey(k) && unicode.IsPrint(rune(k)) {
+		} else if !unicode.IsControl(rune(k)) && !keys.IsArrowKey(k) && unicode.IsPrint(rune(k)) {
 			b.WriteRune(rune(k))
 		}
 
@@ -1051,11 +829,6 @@ func (e *Editor) Prompt(prompt string, cb func(query string, k key)) (string, er
 			cb(b.String(), k)
 		}
 	}
-}
-
-func isArrowKey(k key) bool {
-	return k == keyArrowUp || k == keyArrowRight ||
-		k == keyArrowDown || k == keyArrowLeft
 }
 
 func (e *Editor) Save(opts ...string) (int, error) {
@@ -1099,7 +872,7 @@ func (e *Editor) OpenFile(filename string) error {
 		line := s.Bytes()
 		// strip off newline or cariage return
 		bytes.TrimRightFunc(line, func(r rune) bool { return r == '\n' || r == '\r' })
-		e.InsertRow(len(e.rows), string(line))
+		e.InsertRow(len(e.Rows), string(line))
 	}
 	if err := s.Err(); err != nil {
 		return err
@@ -1109,49 +882,49 @@ func (e *Editor) OpenFile(filename string) error {
 }
 
 func (e *Editor) InsertRow(at int, chars string) {
-	if at < 0 || at > len(e.rows) {
+	if at < 0 || at > len(e.Rows) {
 		return
 	}
 	row := &Row{chars: []rune(chars)}
 	row.idx = at
 	if at > 0 {
-		row.hasUnclosedComment = e.rows[at-1].hasUnclosedComment
+		row.hasUnclosedComment = e.Rows[at-1].hasUnclosedComment
 	}
 	e.updateRow(row)
 
-	e.rows = append(e.rows, &Row{}) // grow the buffer
-	copy(e.rows[at+1:], e.rows[at:])
-	for i := at + 1; i < len(e.rows); i++ {
-		e.rows[i].idx++
+	e.Rows = append(e.Rows, &Row{}) // grow the buffer
+	copy(e.Rows[at+1:], e.Rows[at:])
+	for i := at + 1; i < len(e.Rows); i++ {
+		e.Rows[i].idx++
 	}
-	e.rows[at] = row
+	e.Rows[at] = row
 }
 
 func (e *Editor) CutRow() {
 	e.dirty++
 
-	row := e.rows[e.cy]
+	row := e.Rows[e.cy]
 	e.yankRegister = row.render
 
-	e.undoPath = append(e.undoPath, &UndoNode{undoType: Cut, fromIdx: e.cy, toIdx: e.cy, beforeRows: []*Row{row}, afterRows: []*Row{{}}})
+	e.undoPath = append(e.undoPath, &UndoNode{undoType: actions.Cut, fromIdx: e.cy, toIdx: e.cy, beforeRows: []*Row{row}, afterRows: []*Row{{}}})
 
-	copy(e.rows[e.cy:], e.rows[e.cy+1:])
-	e.rows = e.rows[:len(e.rows)-1]
-	for i := e.cy; i < len(e.rows); i++ {
-		e.rows[i].idx--
+	copy(e.Rows[e.cy:], e.Rows[e.cy+1:])
+	e.Rows = e.Rows[:len(e.Rows)-1]
+	for i := e.cy; i < len(e.Rows); i++ {
+		e.Rows[i].idx--
 	}
 }
 
 // FIXME: when cursor is at the end of the line, the yanking doesn't work
 func (e *Editor) YankRow() {
 	e.dirty++
-	row := e.rows[e.cy]
+	row := e.Rows[e.cy]
 	e.yankRegister = row.render
 }
 
 func (e *Editor) PasteRow(at int) {
 	e.dirty++
-	e.undoPath = append(e.undoPath, &UndoNode{undoType: Paste, fromIdx: at, toIdx: at, afterRows: []*Row{e.rows[at]}, beforeRows: []*Row{{}}})
+	e.undoPath = append(e.undoPath, &UndoNode{undoType: actions.Paste, fromIdx: at, toIdx: at, afterRows: []*Row{e.Rows[at]}, beforeRows: []*Row{{}}})
 
 	e.InsertRow(at, e.yankRegister)
 	e.yankRegister = ""
@@ -1163,11 +936,11 @@ func (e *Editor) InsertNewline() {
 	if e.cx == 0 {
 		e.InsertRow(e.cy, "")
 	} else {
-		row := e.rows[e.cy]
+		row := e.Rows[e.cy]
 		e.InsertRow(e.cy+1, string(row.chars[e.cx:]))
 		// reassignment needed since the call to InsertRow
 		// invalidates the pointer.
-		row = e.rows[e.cy]
+		row = e.Rows[e.cy]
 		row.chars = row.chars[:e.cx]
 		e.updateRow(row)
 	}
@@ -1185,8 +958,8 @@ func (e *Editor) updateRow(row *Row) {
 			col++
 			// append spaces until we get to a tab stop
 			var currentTabstop int
-			if e.syntax.tabstop != 0 {
-				currentTabstop = e.syntax.tabstop
+			if e.syntax.Tabstop != 0 {
+				currentTabstop = e.syntax.Tabstop
 			} else {
 				currentTabstop = tabstop
 			}
@@ -1202,14 +975,10 @@ func (e *Editor) updateRow(row *Row) {
 	e.updateHighlight(row)
 }
 
-func isSeparator(r rune) bool {
-	return unicode.IsSpace(r) || strings.IndexRune(",.()+-/*=~%<>[]{}:;", r) != -1
-}
-
 func (e *Editor) updateHighlight(row *Row) {
 	row.hl = make([]uint8, utf8.RuneCountInString(row.render))
 	for i := range row.hl {
-		row.hl[i] = hlNormal
+		row.hl[i] = syntax.HlNormal
 	}
 
 	if e.syntax == nil {
@@ -1223,23 +992,23 @@ func (e *Editor) updateHighlight(row *Row) {
 	var strQuote rune
 
 	// indicates whether we are inside a multi-line comment.
-	inComment := row.idx > 0 && e.rows[row.idx-1].hasUnclosedComment
+	inComment := row.idx > 0 && e.Rows[row.idx-1].hasUnclosedComment
 
 	idx := 0
 	runes := []rune(row.render)
 	for idx < len(runes) {
 		r := runes[idx]
-		prevHl := hlNormal
+		prevHl := syntax.HlNormal
 		if idx > 0 {
 			prevHl = row.hl[idx-1]
 		}
 
-		if e.syntax.mcs != "" && e.syntax.mce != "" && strQuote == 0 {
+		if e.syntax.Mcs != "" && e.syntax.Mce != "" && strQuote == 0 {
 			if inComment {
-				row.hl[idx] = hlMlComment
-				if strings.HasPrefix(string(runes[idx:]), e.syntax.mce) {
-					for j := 0; j < len(e.syntax.mce); j++ {
-						row.hl[idx] = hlMlComment
+				row.hl[idx] = syntax.HlMlComment
+				if strings.HasPrefix(string(runes[idx:]), e.syntax.Mce) {
+					for j := 0; j < len(e.syntax.Mce); j++ {
+						row.hl[idx] = syntax.HlMlComment
 						idx++
 					}
 					inComment = false
@@ -1249,9 +1018,9 @@ func (e *Editor) updateHighlight(row *Row) {
 					idx++
 					continue
 				}
-			} else if strings.HasPrefix(string(runes[idx:]), e.syntax.mcs) {
-				for j := 0; j < len(e.syntax.mcs); j++ {
-					row.hl[idx] = hlMlComment
+			} else if strings.HasPrefix(string(runes[idx:]), e.syntax.Mcs) {
+				for j := 0; j < len(e.syntax.Mcs); j++ {
+					row.hl[idx] = syntax.HlMlComment
 					idx++
 				}
 				inComment = true
@@ -1259,22 +1028,22 @@ func (e *Editor) updateHighlight(row *Row) {
 			}
 		}
 
-		if e.syntax.scs != "" && strQuote == 0 && !inComment {
-			if strings.HasPrefix(string(runes[idx:]), e.syntax.scs) {
+		if e.syntax.Scs != "" && strQuote == 0 && !inComment {
+			if strings.HasPrefix(string(runes[idx:]), e.syntax.Scs) {
 				for idx < len(runes) {
-					row.hl[idx] = hlComment
+					row.hl[idx] = syntax.HlComment
 					idx++
 				}
 				break
 			}
 		}
 
-		if (e.syntax.flags & HL_HIGHLIGHT_STRINGS) != 0 {
+		if (e.syntax.Flags & syntax.HL_HIGHLIGHT_STRINGS) != 0 {
 			if strQuote != 0 {
-				row.hl[idx] = hlString
+				row.hl[idx] = syntax.HlString
 				//deal with escape quote when inside a string
 				if r == '\\' && idx+1 < len(runes) {
-					row.hl[idx+1] = hlString
+					row.hl[idx+1] = syntax.HlString
 					idx += 2
 					continue
 				}
@@ -1287,17 +1056,17 @@ func (e *Editor) updateHighlight(row *Row) {
 			} else {
 				if r == '"' || r == '\'' {
 					strQuote = r
-					row.hl[idx] = hlString
+					row.hl[idx] = syntax.HlString
 					idx++
 					continue
 				}
 			}
 		}
 
-		if (e.syntax.flags & HL_HIGHLIGHT_NUMBERS) != 0 {
-			if unicode.IsDigit(r) && (prevSep || prevHl == hlNumber) ||
-				r == '.' && prevHl == hlNumber {
-				row.hl[idx] = hlNumber
+		if (e.syntax.Flags & syntax.HL_HIGHLIGHT_NUMBERS) != 0 {
+			if unicode.IsDigit(r) && (prevSep || prevHl == syntax.HlNumber) ||
+				r == '.' && prevHl == syntax.HlNumber {
+				row.hl[idx] = syntax.HlNumber
 				idx++
 				prevSep = false
 				continue
@@ -1306,7 +1075,7 @@ func (e *Editor) updateHighlight(row *Row) {
 
 		if prevSep {
 			keywordFound := false
-			for _, kw := range e.syntax.keywords {
+			for _, kw := range e.syntax.Keywords {
 				isKeyword2 := strings.HasSuffix(kw, "|")
 				if isKeyword2 {
 					kw = strings.TrimSuffix(kw, "|")
@@ -1314,11 +1083,11 @@ func (e *Editor) updateHighlight(row *Row) {
 
 				end := idx + utf8.RuneCountInString(kw)
 				if end <= len(runes) && kw == string(runes[idx:end]) &&
-					(end == len(runes) || isSeparator(runes[end])) {
+					(end == len(runes) || tools.IsSeparator(runes[end])) {
 					keywordFound = true
-					hl := hlKeyword1
+					hl := syntax.HlKeyword1
 					if isKeyword2 {
-						hl = hlKeyword2
+						hl = syntax.HlKeyword2
 					}
 					for idx < end {
 						row.hl[idx] = hl
@@ -1333,33 +1102,14 @@ func (e *Editor) updateHighlight(row *Row) {
 			}
 		}
 
-		prevSep = isSeparator(r)
+		prevSep = tools.IsSeparator(r)
 		idx++
 	}
 
 	changed := row.hasUnclosedComment != inComment
 	row.hasUnclosedComment = inComment
-	if changed && row.idx+1 < len(e.rows) {
-		e.updateHighlight(e.rows[row.idx+1])
-	}
-}
-
-func syntaxToColor(hl uint8) string {
-	switch hl {
-	case hlComment, hlMlComment:
-		return "0;90"
-	case hlKeyword1:
-		return "0;94"
-	case hlKeyword2:
-		return "0;96"
-	case hlString:
-		return "0;36"
-	case hlNumber:
-		return "0;33"
-	case hlMatch:
-		return "1;92"
-	default:
-		return "0;37"
+	if changed && row.idx+1 < len(e.Rows) {
+		e.updateHighlight(e.Rows[row.idx+1])
 	}
 }
 
@@ -1371,13 +1121,13 @@ func (e *Editor) selectSyntaxHighlight() {
 
 	ext := filepath.Ext(e.filename)
 
-	for _, syntax := range HLDB {
-		for _, pattern := range syntax.filematch {
+	for _, syntax := range syntax.HLDB {
+		for _, pattern := range syntax.Filematch {
 			isExt := strings.HasPrefix(pattern, ".")
 			if (isExt && pattern == ext) ||
 				(!isExt && strings.Index(e.filename, pattern) != -1) {
 				e.syntax = syntax
-				for _, row := range e.rows {
+				for _, row := range e.Rows {
 					e.updateHighlight(row)
 				}
 				return
@@ -1407,10 +1157,10 @@ func (row *Row) deleteChar(at int) {
 }
 
 func (e *Editor) InsertChar(c rune) {
-	if e.cy == len(e.rows) {
-		e.InsertRow(len(e.rows), "")
+	if e.cy == len(e.Rows) {
+		e.InsertRow(len(e.Rows), "")
 	}
-	row := e.rows[e.cy]
+	row := e.Rows[e.cy]
 	row.insertChar(e.cx, c)
 	e.updateRow(row)
 	e.cx++
@@ -1418,20 +1168,20 @@ func (e *Editor) InsertChar(c rune) {
 }
 
 func (e *Editor) DeleteChar() {
-	if e.cy == len(e.rows) {
+	if e.cy == len(e.Rows) {
 		return
 	}
 	if e.cx == 0 && e.cy == 0 {
 		return
 	}
-	row := e.rows[e.cy]
+	row := e.Rows[e.cy]
 	if e.cx > 0 {
 		row.deleteChar(e.cx - 1)
 		e.updateRow(row)
 		e.cx--
 		e.dirty++
 	} else {
-		prevRow := e.rows[e.cy-1]
+		prevRow := e.Rows[e.cy-1]
 		e.cx = len(prevRow.chars)
 		prevRow.appendChars(row.chars)
 		e.updateRow(prevRow)
@@ -1441,12 +1191,12 @@ func (e *Editor) DeleteChar() {
 }
 
 func (e *Editor) DeleteRow(at int) {
-	if at < 0 || at >= len(e.rows) {
+	if at < 0 || at >= len(e.Rows) {
 		return
 	}
-	e.rows = append(e.rows[:at], e.rows[at+1:]...)
-	for i := at; i < len(e.rows); i++ {
-		e.rows[i].idx--
+	e.Rows = append(e.Rows[:at], e.Rows[at+1:]...)
+	for i := at; i < len(e.Rows); i++ {
+		e.Rows[i].idx--
 	}
 	e.dirty++
 }
@@ -1465,19 +1215,19 @@ func (e *Editor) Find() error {
 	savedHlRowIndex := -1
 	savedHl := []uint8(nil)
 
-	onKeyPress := func(query string, k key) {
+	onKeyPress := func(query string, k keys.Key) {
 		if len(savedHl) > 0 {
-			copy(e.rows[savedHlRowIndex].hl, savedHl)
+			copy(e.Rows[savedHlRowIndex].hl, savedHl)
 			savedHl = []uint8(nil)
 		}
 		switch k {
-		case keyEnter, key('\x1b'):
+		case keys.KeyEnter, keys.Key('\x1b'):
 			lastMatchRowIndex = -1
 			searchDirection = 1
 			return
-		case keyArrowRight, keyArrowDown:
+		case keys.KeyArrowRight, keys.KeyArrowDown:
 			searchDirection = 1
-		case keyArrowLeft, keyArrowUp:
+		case keys.KeyArrowLeft, keys.KeyArrowUp:
 			searchDirection = -1
 		default:
 			// unless an arrow key was pressed, we'll reset.
@@ -1492,16 +1242,16 @@ func (e *Editor) Find() error {
 		current := lastMatchRowIndex
 
 		// search for query and set e.cy, e.cx, e.rowOffset values.
-		for i := 0; i < len(e.rows); i++ {
+		for i := 0; i < len(e.Rows); i++ {
 			current += searchDirection
 			switch current {
 			case -1:
-				current = len(e.rows) - 1
-			case len(e.rows):
+				current = len(e.Rows) - 1
+			case len(e.Rows):
 				current = 0
 			}
 
-			row := e.rows[current]
+			row := e.Rows[current]
 			rx := strings.Index(row.render, query)
 			if rx != -1 {
 				lastMatchRowIndex = current
@@ -1509,13 +1259,13 @@ func (e *Editor) Find() error {
 				e.cx = e.rowRxToCx(row, rx)
 				// set rowOffset to bottom so that the next scroll() will scroll
 				// upwards and the matching line will be at the top of the screen
-				e.rowOffset = len(e.rows)
+				e.rowOffset = len(e.Rows)
 				// highlight the matched string
 				savedHlRowIndex = current
 				savedHl = make([]uint8, len(row.hl))
 				copy(savedHl, row.hl)
 				for i := 0; i < utf8.RuneCountInString(query); i++ {
-					row.hl[rx+i] = hlMatch
+					row.hl[rx+i] = syntax.HlMatch
 				}
 				break
 			}
@@ -1531,42 +1281,4 @@ func (e *Editor) Find() error {
 		e.rowOffset = savedRowOffset
 	}
 	return err
-}
-
-func main() {
-	defer func() {
-		if r := recover(); r != nil {
-			l.Printf("---- panic stack ----\npanic: %#v\n%s\n---------------------", r, string(debug.Stack()))
-		}
-	}()
-
-	var editor Editor
-
-	if err := editor.Init(); err != nil {
-		die(err)
-	}
-	defer editor.Close()
-
-	if len(os.Args) > 1 {
-		err := editor.OpenFile(os.Args[1])
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			die(err)
-		}
-	}
-
-	if len(editor.rows) == 0 {
-		editor.rows = append(editor.rows, &Row{})
-	}
-
-	editor.SetStatusMessage("-- NORMAL --")
-
-	for {
-		editor.Render()
-		if err := editor.ProcessKey(); err != nil {
-			if err == ErrQuitEditor {
-				break
-			}
-			die(err)
-		}
-	}
 }
