@@ -5,10 +5,13 @@ Dead simple modal editor based off vim motions
 
 ## Installation
 ```bash
-go install github.com/amirali/virayeshgar@latest
+go install github.com/amirali/virayeshgar/cmd/virayeshgar@latest
 ```
 
 ## Todo
+
+### core features
+- [ ] lua integration
 
 ### features
 - [x] line number
