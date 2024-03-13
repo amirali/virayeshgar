@@ -37,8 +37,8 @@ func main() {
 	}
 	defer editor.Close()
 
-	if len(os.Args) > 1 {
-		err := editor.OpenFile(os.Args[1])
+	if len(flag.Args()) > 0 {
+		err := editor.OpenFile(flag.Arg(0))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			editormod.Die(err)
 		}

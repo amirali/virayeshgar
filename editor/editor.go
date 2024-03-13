@@ -342,6 +342,7 @@ func (e *Editor) ExecuteMotion() error {
 	return nil
 }
 
+// FIXME: o and O doesn't push anything to the undo stack
 func (e *Editor) Undo() {
 	undoLength := len(e.undoPath)
 	if undoLength == 0 {
