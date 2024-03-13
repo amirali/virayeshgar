@@ -29,10 +29,12 @@ var version = "0.0.0dev"
 
 const tabstop = 8
 
-var ErrQuitEditor = errors.New("quit editor")
-var ErrUnknownMode = errors.New("unknown mode")
-var ErrUnknownCommand = errors.New("unknown command")
-var ErrUnkownMotion = errors.New("unknown motion")
+var (
+	ErrQuitEditor     = errors.New("quit editor")
+	ErrUnknownMode    = errors.New("unknown mode")
+	ErrUnknownCommand = errors.New("unknown command")
+	ErrUnkownMotion   = errors.New("unknown motion")
+)
 
 var (
 	stdinfd  = int(os.Stdin.Fd())
@@ -575,7 +577,6 @@ func (e *Editor) drawRows(b *strings.Builder) {
 			} else {
 				b.Write([]byte("~"))
 			}
-
 		} else {
 			var (
 				line string
@@ -932,7 +933,7 @@ func (e *Editor) PasteRow(at int) {
 }
 
 func (e *Editor) InsertNewline() {
-	e.dirty += 1
+	e.dirty++
 
 	if e.cx == 0 {
 		e.InsertRow(e.cy, "")
@@ -1042,7 +1043,7 @@ func (e *Editor) updateHighlight(row *Row) {
 		if (e.syntax.Flags & syntax.HL_HIGHLIGHT_STRINGS) != 0 {
 			if strQuote != 0 {
 				row.hl[idx] = syntax.HlString
-				//deal with escape quote when inside a string
+				// deal with escape quote when inside a string
 				if r == '\\' && idx+1 < len(runes) {
 					row.hl[idx+1] = syntax.HlString
 					idx += 2
