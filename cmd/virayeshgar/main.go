@@ -17,7 +17,7 @@ func main() {
 
 	var outfile io.Writer
 	if *debugFlag {
-		outfile, _ = os.Create("./virayeshgar.keys.log")
+		outfile, _ = os.Create("./virayeshgar.log")
 	} else {
 
 		outfile, _ = os.Open(os.DevNull)
